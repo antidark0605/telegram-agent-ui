@@ -1,6 +1,6 @@
 # telegram-agent-ui
 
-Revision: 1 — 2026-10-15
+Revision: 2 — 2026-10-16
 
 Small, transport-independent Python presentation package for Telegram agent applications. Runtime dependencies: Python standard library only, Python 3.10+. Distribution name: `telegram-agent-ui`; import name: `telegram_ui`.
 
@@ -67,3 +67,7 @@ Manual acceptance for an integrating application: send a short task, verify prog
 - [Python packaging guide](https://packaging.python.org/en/latest/tutorials/packaging-projects/)
 
 License: MIT.
+
+## Optional document contract package
+
+The independent [`telegram-agent-transport`](packages/telegram-agent-transport/README.md) distribution provides synchronous/asynchronous document provider contracts and destination receipts. It is built and installed separately; `telegram_ui` retains its presentation-only contract. No application or live transport migration is included.

@@ -23,3 +23,13 @@ jobs:
           python -m pip install --no-deps --target "$RUNNER_TEMP/ui-consumer" dist/*.whl
           cd "$RUNNER_TEMP"
           PYTHONPATH="$RUNNER_TEMP/ui-consumer" python -c "from telegram_ui import UsageView, render_usage; assert len(render_usage(UsageView()).split('\n>\n')) == 4"
+      - name: Verify independent document contract package
+        shell: bash
+        run: |
+          cd packages/telegram-agent-transport
+          python -m compileall -q src tests
+          PYTHONPATH=src python -m unittest discover -s tests -v
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python -m pip install --no-deps --target "$RUNNER_TEMP/transport-consumer" dist/*.whl
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$RUNNER_TEMP/transport-consumer" python -c "from telegram_transport import Destination, Document, Receipt, send_document, send_document_async; assert Destination(12345, 77).message_thread_id == 77"
