@@ -5,6 +5,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 
 GAP = '\n\n\u00a0\n\n'
 STATES = {
@@ -17,7 +18,7 @@ TERMINAL = frozenset({'completed', 'cancelled', 'failed'})
 def _label(value: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 300:
         raise ValueError('Expected a nonempty label of at most 300 characters')
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if any(ord(c) < 32 or ord(c) == 127 or c in '\u0085\u2028\u2029' for c in value):
         raise ValueError('Labels must occupy one line')
     return re.sub(r'([\\`*_{}\[\]()#+.!|>~\-])', r'\\\1', value)
 
@@ -37,6 +38,7 @@ class ContextUsage:
 class QuotaWindow:
     remaining_percent: float
     resets_at: datetime | None = None
+    used_percent: float | None = None
 
     def __post_init__(self):
         value = self.remaining_percent
@@ -46,6 +48,91 @@ class QuotaWindow:
         at = self.resets_at
         if at is not None and (not isinstance(at, datetime) or at.utcoffset() is None):
             raise ValueError('Reset time requires a timezone')
+        used = self.used_percent
+        if used is not None and (type(used) not in (int, float) or not 0 <= used <= 100
+                                 or not math.isfinite(used)):
+            raise ValueError('Invalid used percentage')
+
+
+@dataclass(frozen=True)
+class QuotaRow:
+    label: str
+    window: QuotaWindow | None = None
+
+    def __post_init__(self):
+        _label(self.label)
+        if self.window is not None and not isinstance(self.window, QuotaWindow):
+            raise ValueError('Expected QuotaWindow')
+
+
+@dataclass(frozen=True)
+class ReplyIdentity:
+    display_name: str | None = None
+    effort: str | None = None
+    account: str | None = None
+    speed: str | None = None
+
+    def __post_init__(self):
+        for value in (self.display_name, self.effort, self.account, self.speed):
+            if value is not None:
+                _label(value)
+
+
+@dataclass(frozen=True)
+class DisplayProfile:
+    icons: tuple[tuple[str, str], ...] = ()
+    fallback_icon: str = '⚡'
+    fields: tuple[str, ...] = ('model', 'effort', 'account', 'speed')
+    account_mode: str = 'append'
+    hide_effort_for: tuple[str, ...] = ()
+    quota_precision: int = 1
+    show_reset_offset: bool = True
+
+    def __post_init__(self):
+        _label(self.fallback_icon)
+        if not isinstance(self.icons, tuple):
+            raise ValueError('Expected immutable icon pairs')
+        keys = []
+        for pair in self.icons:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise ValueError('Expected agent/icon pair')
+            for value in pair:
+                _label(value)
+            keys.append(pair[0])
+        if len(keys) != len(set(keys)):
+            raise ValueError('Duplicate agent icon')
+        if (not isinstance(self.fields, tuple)
+                or any(type(v) is not str or v not in ('model', 'effort', 'account', 'speed')
+                       for v in self.fields)
+                or len(self.fields) != len(set(self.fields))):
+            raise ValueError('Invalid or duplicate identity field')
+        if self.account_mode not in ('append', 'replace', 'hide'):
+            raise ValueError('Unknown account display mode')
+        if not isinstance(self.hide_effort_for, tuple):
+            raise ValueError('Expected immutable agent ids')
+        for agent in self.hide_effort_for:
+            _label(agent)
+        if type(self.quota_precision) is not int or not 0 <= self.quota_precision <= 4:
+            raise ValueError('Quota precision must be an integer from zero to four')
+        if type(self.show_reset_offset) is not bool:
+            raise ValueError('Expected reset offset boolean')
+
+    @classmethod
+    def from_dict(cls, config: Mapping) -> DisplayProfile:
+        """Validate an already parsed configuration; never reads files."""
+        if not isinstance(config, Mapping) or any(k not in cls.__dataclass_fields__ for k in config):
+            raise ValueError('Unknown display configuration key or invalid mapping')
+        data = dict(config)
+        if 'icons' in data:
+            if not isinstance(data['icons'], Mapping):
+                raise ValueError('Expected icon mapping')
+            data['icons'] = tuple(data['icons'].items())
+        for key in ('fields', 'hide_effort_for'):
+            if key in data:
+                if not isinstance(data[key], (list, tuple)):
+                    raise ValueError('Expected configuration array')
+                data[key] = tuple(data[key])
+        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -54,6 +141,7 @@ class UsageView:
     five_hour: QuotaWindow | None = None
     weekly: QuotaWindow | None = None
     cached: bool = False
+    quota_rows: tuple[QuotaRow, ...] | None = None
 
     def __post_init__(self):
         if self.context is not None and not isinstance(self.context, ContextUsage):
@@ -62,6 +150,15 @@ class UsageView:
             raise ValueError('Expected QuotaWindow')
         if type(self.cached) is not bool:
             raise ValueError('Expected cached boolean')
+        if self.quota_rows is not None:
+            if (not isinstance(self.quota_rows, tuple)
+                    or any(not isinstance(row, QuotaRow) for row in self.quota_rows)):
+                raise ValueError('Expected immutable quota rows')
+            if self.five_hour is not None or self.weekly is not None:
+                raise ValueError('Custom quota rows cannot override legacy windows')
+            labels = [row.label for row in self.quota_rows]
+            if len(labels) != len(set(labels)):
+                raise ValueError('Duplicate quota row label')
 
 
 @dataclass(frozen=True)
@@ -70,6 +167,7 @@ class ReplyView:
     model: str | None
     body: str
     usage: UsageView | None = None
+    identity: ReplyIdentity | None = None
 
     def __post_init__(self):
         _label(self.agent)
@@ -79,6 +177,8 @@ class ReplyView:
             raise ValueError('Expected Markdown body')
         if self.usage is not None and not isinstance(self.usage, UsageView):
             raise ValueError('Expected UsageView')
+        if self.identity is not None and not isinstance(self.identity, ReplyIdentity):
+            raise ValueError('Expected ReplyIdentity')
 
 
 @dataclass(frozen=True)
@@ -87,34 +187,58 @@ class ProgressView:
     reply_markup: dict
 
 
-def _window(label: str, data: QuotaWindow | None) -> str:
+def _window(label: str, data: QuotaWindow | None, profile: DisplayProfile) -> str:
+    label = _label(label)
     if data is None:
         return label + ': unavailable'
     left = data.remaining_percent
-    row = f'{label}: {100-left:.1f}% used · {left:.1f}% left'
+    used = 100-left if data.used_percent is None else data.used_percent
+    precision = profile.quota_precision
+    row = f'{label}: {used:.{precision}f}% used · {left:.{precision}f}% left'
     if data.resets_at is not None:
-        row += f' · resets {data.resets_at:%m/%d %H:%M %z}'
+        row += f' · resets {data.resets_at:%m/%d %H:%M}'
+        if profile.show_reset_offset:
+            row += f' {data.resets_at:%z}'
     return row
 
 
-def render_usage(view: UsageView) -> str:
+def render_usage(view: UsageView, *, profile: DisplayProfile = DisplayProfile()) -> str:
+    if not isinstance(profile, DisplayProfile):
+        raise ValueError('Expected DisplayProfile')
     context = 'Context: unavailable'
     if view.context is not None:
         data = view.context
         context = (f'Context: {data.used_tokens:,} / {data.window_tokens:,} tokens '
                    f'({data.used_tokens / data.window_tokens * 100:.2f}%)')
-    rows = ['📊 **Usage**' + (' · cached' if view.cached else ''), context,
-            _window('5h', view.five_hour), _window('Weekly', view.weekly)]
+    windows = view.quota_rows
+    if windows is None:
+        windows = (QuotaRow('5h', view.five_hour), QuotaRow('Weekly', view.weekly))
+    rows = ['📊 **Usage**' + (' · cached' if view.cached else ''), context]
+    rows.extend(_window(row.label, row.window, profile) for row in windows)
     # Quote paragraphs retain row boundaries when Markdown soft breaks fold.
     return '\n>\n'.join('> ' + row for row in rows)
 
 
-def render_reply(view: ReplyView) -> str:
-    header = f'⚡ **[{_label(view.agent)}]**'
-    if view.model is not None:
-        header += ' · ' + _label(view.model)
+def render_reply(view: ReplyView, *, profile: DisplayProfile = DisplayProfile()) -> str:
+    if not isinstance(profile, DisplayProfile):
+        raise ValueError('Expected DisplayProfile')
+    identity = view.identity or ReplyIdentity()
+    name = identity.display_name or view.agent
+    if profile.account_mode == 'replace' and identity.account is not None:
+        name = identity.account
+    icon = dict(profile.icons).get(view.agent, profile.fallback_icon)
+    header = f'{_label(icon)} **[{_label(name)}]**'
+    values = {'model': view.model, 'effort': identity.effort,
+              'account': identity.account, 'speed': identity.speed}
+    if profile.account_mode != 'append':
+        values['account'] = None
+    if view.agent in profile.hide_effort_for:
+        values['effort'] = None
+    for field in profile.fields:
+        if values[field] is not None:
+            header += ' · ' + _label(values[field])
     answer = header + GAP + view.body
-    return answer if view.usage is None else answer + GAP + render_usage(view.usage)
+    return answer if view.usage is None else answer + GAP + render_usage(view.usage, profile=profile)
 
 
 def render_progress(*, state: str, elapsed_seconds: int, task_id: str,

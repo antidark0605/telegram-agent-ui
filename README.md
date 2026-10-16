@@ -1,10 +1,10 @@
 # telegram-agent-ui
 
-Revision: 2 — 2026-10-16
+Revision: 4 — 2026-10-16
 
 Small, transport-independent Python presentation package for Telegram agent applications. Runtime dependencies: Python standard library only, Python 3.10+. Distribution name: `telegram-agent-ui`; import name: `telegram_ui`.
 
-Initial 0.1.0 source candidate. No hosted package-index release or application migration is included. Install from a reviewed, fixed Git commit or a locally built wheel. This is a library, not a running Bot.
+0.2.0 source candidate. No hosted package-index release or application migration is included. Install from a reviewed, fixed Git commit or a locally built wheel. This is a library, not a running Bot.
 
 ## Included
 
@@ -32,6 +32,10 @@ answer = render_reply(ReplyView(
 `UsageView` optionally accepts `ContextUsage(used_tokens, window_tokens)` and `QuotaWindow(remaining_percent, resets_at)` for `five_hour`/`weekly`. Obtain these from a verified provider. A task's token totals do not establish live context occupancy. Reset times retain the caller-supplied timezone and show its UTC offset.
 
 ## Integration contract
+
+Version 0.2 adds optional `ReplyIdentity`, immutable `DisplayProfile` with validated `from_dict()` configuration, and extensible `QuotaRow` data. Agent icons, display names, effort, account aliases and speed labels can be preserved without application-specific renderer forks. Existing positional constructors and default output remain compatible. See [display profiles and integration example](docs/display-profiles.md) for the complete contract and acceptance steps.
+
+The same wheel includes `ServiceLifecycleView` and `render_service_lifecycle`, imported from `telegram_ui.service_lifecycle`. See [service lifecycle notices](docs/service-lifecycle.md). Event evidence, readiness checks, authorized destinations and deduplication belong to the consuming application; the renderer does not detect restarts or send notifications.
 
 This package only produces Markdown and button data. The application owns network calls, model catalogs, usage collection, sessions, scheduling, file permissions, recipient routing, delivery acknowledgement, retry policy and actual cancellation.
 
